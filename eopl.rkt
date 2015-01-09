@@ -221,6 +221,34 @@
 
 
 ;;Chapter 02
+;;2.1
+;empty-env : () -> Env
+(define (empty-env) '(empty-env))
+
+;extend-env : Var x SchemeVal x Env -> Env
+(define (extend-env var val env)
+  (list 'extend-env var val env))
+
+;apply-env : Env x Var -> SchemeVal
+(define (apply-env env search-var)
+  (cond
+    [(eqv? (car env) 'empty-env) (report-no-binding-found search-var)]
+    [(eqv? (car env) 'extend-env)
+     (let ([saved-var (cadr env)]
+           [saved-val (caddr env)]
+           [saved-env (caddr env)])
+       (if (eqv? search-var saved-var)
+           saved-val
+           (apply-env saved-env search-var)))]
+    [else (report-invalid-env env)]))
+
+(define (report-no-binding-found search-var)
+  (eopl:error 'apply-env "No binding for ~s" search-var))
+
+(define (report-invalid-env env)
+  (eopl:error 'apply-env "Bad Environment: ~s" env))
+    
+      
 
 ;2.5
 ;empty-env : () -> Env
@@ -232,12 +260,93 @@
   (cons `(,var ,val) env))
 
 
-;2.7
-(define (empty-env-1)
-  #())
 
 ;;BinTree := Int | (Symbol Bintree Bintree)
 ;;ex: 1
 ;; (foo 1 2)
 ;; (bar 1 (foo 2))
 ;; (baz (bar 1 (foo 1 2)) (biz 4 5))
+
+(define-datatype bin-exp bin-exp?
+  (node
+   (num number?))
+  (leaf
+   (key symbol?)
+   (left bin-exp?)
+   (right bin-exp?)))
+
+;;bintree-to-list : (BinTree) -> ListOf(Symbol)
+(define (bintree-to-list bintree)
+  (cases bin-exp bintree
+    (node (num)
+         num)
+    (leaf (key left right)
+          `(interior-node ,key 
+                          (leaf-node ,(bintree-to-list left)) 
+                          (leaf-node ,(bintree-to-list right))))))
+
+
+;;max-interior : (BinTree) -> Symbol
+(define (max-interior bintree)
+  (define (bintree-sums bintree)
+    (cases bin-exp bintree
+      (node (num)
+            `(none ,num 0))
+      (leaf (key left right)
+            (let* ([bintree-left (bintree-sums left)]
+                  [bintree-right (bintree-sums right)]
+                  [num-left (cadr bintree-left)]
+                  [num-right (cadr bintree-right)]
+                  [current-sum (+ num-left num-right)]
+                  [max (if (and (> current-sum (caddr bintree-left)) 
+                                (> current-sum (caddr bintree-right)))
+                           (list key current-sum)
+                           (if (> (caddr bintree-left) (caddr bintree-right))
+                               (list (car bintree-left) (caddr bintree-left)) 
+                               (list (car bintree-right) (caddr bintree-right))))])
+              `(,(car max) ,current-sum ,(cadr max))))))
+  (car (bintree-sums bintree)))
+
+;; page 18
+;; LcExp :: = Identifier
+;;        :: = (lambda (Identifier) Lc-exp)
+;;        :: = (Lc-exp Lc-exp)
+
+(define-datatype lc-exp lc-exp?
+  [var-exp
+   (var symbol?)]
+  [lambda-exp
+   (bound-var symbol?)
+   (body lc-exp?)]
+  [app-exp
+   (rator lc-exp?)
+   (rand lc-exp?)])
+
+(define (report-invalid-concrete-syntax datum)
+  (display "invalid syntax"))
+
+;;parse-expression : (SchemeVal) -> LcExp
+(define (parse-expression datum)
+  (cond
+    ((symbol? datum) (var-exp datum))
+    ((pair? datum)
+     (if (eqv? (car datum) 'lambda)
+         (lambda-exp
+          (car (cadr datum))
+          (parse-expression (caddr datum)))
+         (app-exp
+          (parse-expression (car datum))
+          (parse-expression (cadr datum)))))
+    (else (report-invalid-concrete-syntax datum))))
+
+
+;;unparse-lc-exp : (LcExp) -> SchemeVal
+(define (unparse-lc-exp exp)
+  (cases lc-exp exp
+    (var-exp (var) var)
+    (lambda-exp (bound-var body)
+                (list 'lambda (list bound-var)
+                      (unparse-lc-exp body)))
+    (app-exp (rator rand)
+             (list
+              (unparse-lc-exp rator) (unparse-lc-exp rand)))))
