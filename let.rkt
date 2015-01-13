@@ -1,7 +1,8 @@
 #lang racket
 (require parser-tools/lex
+         (prefix-in : parser-tools/lex-sre)
          parser-tools/yacc)
-(require (prefix-in : parser-tools/lex-sre))
+
 
 (struct const-exp (num) #:transparent)
 (struct diff-exp (exp1 exp2) #:transparent)
@@ -16,10 +17,13 @@
 (struct minus-exp (exp) #:transparent)
 (struct mul-exp (exp1 exp2) #:transparent)
 (struct quotient-exp (exp1 exp2) #:transparent)
+(struct lambda-exp (argument body) #:transparent)
+(struct app-exp (procedure argument) #:transparent)
 
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
-  (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF MINUS ADD MUL QUOTIENT EQUAL GREATER LESS))
+  (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
+     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC))
 
 ;; Lexer for the LET Language, Chapter 3
 (define let-lexer
@@ -36,6 +40,7 @@
    [#\= 'EQ]
    ["let" 'LET]
    ["in" 'IN]
+   ["proc" 'PROC]
    ["zero?" 'ZERO]
    ["equal?" 'EQUAL]
    ["greater?" 'GREATER]
@@ -87,6 +92,9 @@
           (let-exp $2 $4 $7)]
          [(IF exp exp exp)
           (if-exp $2 $3 $4)]
+         ;;PROCEDURES creation handler
+         [(PROC LPAR exp RPAR exp) 
+          (lambda-exp $3 $5)]
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -105,7 +113,10 @@
          [(GREATER LPAR exp COMMA exp RPAR)
           (greater?-exp $3 $5)]
          [(LESS LPAR exp COMMA exp RPAR)
-          (less?-exp $3 $5)]))))
+          (less?-exp $3 $5)]
+         [(exp LPAR exp RPAR)
+          (app-exp $1 $3)]
+         ))))
 
 
 ;;Environment
@@ -120,10 +131,14 @@
 (define (apply-env env var)
   (hash-ref env var))
 
+;;get the AST
+(define (ast source)
+  (define source-code (open-input-string source))
+  (let-parser (lambda () (let-lexer source-code))))
+
 ;; run the AST
-(define (run ast)
-  (printf  "~a\n" ast)
-  (interp ast (empty-env)))
+(define (run source)
+  (interp (ast source) (empty-env)))
 
 ;; interp the ast with the environment
 (define (interp exp env)
@@ -136,62 +151,85 @@
     [(mul-exp exp1 exp2) (* (interp exp1 env) (interp exp2 env))]
     [(quotient-exp exp1 exp2) (quotient (interp exp1 env) (interp exp2 env))]
     [(minus-exp exp) (* (interp exp env) -1)]
+    ;;Boolean Ops
     [(zero?-exp exp) (= (interp exp env) 0)]
     [(equal?-exp exp1 exp2) (= (interp exp1 env) (interp exp2 env))]
     [(greater?-exp exp1 exp2) (> (interp exp1 env) (interp exp2 env))]
     [(less?-exp exp1 exp2) (< (interp exp1 env)(interp exp2 env))]
+    ;; Branching
     [(if-exp cond-exp if-exp else-exp)
      (define cond-result (interp cond-exp env))
-     (if cond-result (interp if-exp env) (interp else-exp env))
-     ]
+     (if cond-result (interp if-exp env) (interp else-exp env))]
+    ;; proc language extension
+    ;; application expression
+    [(app-exp app-name app-body)
+     (match-define ;read the lambda contents from the current environment
+       (lambda-exp lambda-parameter lambda-body)
+       (apply-env env (var-exp-var app-name)))
+     ;; this is the application exp, we need to result for the lambda
+     (define app-body-value (interp app-body app-body))
+     ;;the lambda env is the current env plus the variable app
+     (define new-lambda-env
+       (extend-env env (var-exp-var lambda-parameter) app-body-value))
+     (interp lambda-body new-lambda-env)]
+    ;; lambda expression
+    ;; a lambda expression evaluates to itself?
+    [(lambda-exp body argument)
+     (lambda-exp body argument)]   
     [(let-exp var-exp binding-exp body-exp)
      (define variable-name (var-exp-var var-exp))
      (define variable-value (interp binding-exp env))
-     (interp body-exp (extend-env env variable-name variable-value))
-     ]))
+     (interp body-exp (extend-env env variable-name variable-value))]))
 
 
-#;(define source-code "
+
+
+#;
+(run "
 let z = 5:
- in let x = 3:
-   in let y = -(x,1): % y = 2
-    in let x = 4: % x = 4
-     in -(z, -(x,y)) % 5 - (4 - 2)
+in let x = 3:
+in let y = -(x,1): % y = 2
+in let x = 4: % x = 4
+in -(z, -(x,y)) % 5 - (4 - 2)
 ")
 
-#;(define source-code "
+#;(run "
 let z = -(2 , 1): %complex expression
- in let x = 3:
-  in -(z, -(x,1)) % here x = 4
+in let x = 3:
+in -(z, -(x,1)) % here x = 4
 ")
 
-#;(define source-code "
+#;(run "
 let z = 0:
  in zero?(z)
 ")
 
-#;(define source-code "
+#;(run "
 let z = 0:
- in if zero?(z) 1 2 
+in if zero?(z) 1 2 
 ")
 
-#;(define source-code "
+#;(run "
 let z = 5: % z = 5
- in let x = minus(3): % x = -3
-   in let y = +(x,1): % y = -2
-    in let x = 4: % x = 4
-     in *(z, -(x,y))  % 5 * -(4 - 2)
+in let x = minus(3): % x = -3
+in let y = +(x,1): % y = -2
+in let x = 4: % x = 4
+in *(z, -(x,y))  % 5 * -(4 - 2)
 ")
 
-(define source-code "
+#;
+(run "
 let z = 2:
  in if less?(z, 1) 1 0 
 ")
 
-
-(define source (open-input-string source-code))
-(define ast (let-parser (lambda () (let-lexer source))))
-
-(run ast)
+(run "let f = proc(x) -(x, 11): in f(12)")
 
 
+(module+ test
+  (require rackunit)
+  (check-pred lambda-exp? (ast "proc(x) -(x,11)"))
+  (check-pred let-exp?  (ast "let f = proc(x) -(x, 11): in f(f(77))"))
+  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
+  (check-equal? (run "let f = proc(x) -(x, 11): in f(12)") 1)
+  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0))
