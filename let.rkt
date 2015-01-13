@@ -20,6 +20,9 @@
 (struct lambda-exp (argument body) #:transparent)
 (struct app-exp (procedure argument) #:transparent)
 
+(struct closure (argument body environment) #:transparent)
+
+
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
@@ -128,19 +131,32 @@
 (define (extend-env env var value)
   (hash-set env var value))
 
+;; apply-env : hash? symbol? -> any?
 (define (apply-env env var)
   (hash-ref env var))
 
+;; join-env : hash? hash? -> hash?
+(define (join-env env extend-env)
+  (for/fold ([tmp env]) ([(key value) (in-hash extend-env)]) 
+    (hash-set tmp key value)))
+
+
 ;;get the AST
+;; string? -> struct-exp
 (define (ast source)
   (define source-code (open-input-string source))
   (let-parser (lambda () (let-lexer source-code))))
 
 ;; run the AST
+;; string? -> any?
 (define (run source)
   (interp (ast source) (empty-env)))
 
+
+
+
 ;; interp the ast with the environment
+;; struct-exp ->  any?
 (define (interp exp env)
   (match exp
     [(const-exp num) num]
@@ -161,21 +177,24 @@
      (define cond-result (interp cond-exp env))
      (if cond-result (interp if-exp env) (interp else-exp env))]
     ;; proc language extension
-    ;; application expression
+    ;; application/closure expression
     [(app-exp app-name app-body)
-     (match-define ;read the lambda contents from the current environment
-       (lambda-exp lambda-parameter lambda-body)
+     (match-define ;get the closure from the environment
+       (closure clos-argument clos-body clos-environment)
        (apply-env env (var-exp-var app-name)))
-     ;; this is the application exp, we need to result for the lambda
-     (define app-body-value (interp app-body app-body))
-     ;;the lambda env is the current env plus the variable app
-     (define new-lambda-env
-       (extend-env env (var-exp-var lambda-parameter) app-body-value))
-     (interp lambda-body new-lambda-env)]
+     ; this is the application exp, we need the result to feed the closure
+     (define app-body-value (interp app-body env))
+     ;the closure env is the current env plus the clos inner env
+     (define new-closure-env
+       (join-env 
+        ;the close argument gets replaced by the application result
+        (extend-env env (var-exp-var clos-argument) app-body-value) 
+        clos-environment))
+     (interp clos-body new-closure-env)]
     ;; lambda expression
-    ;; a lambda expression evaluates to itself?
+    ;; a lambda expression evaluates to a closure
     [(lambda-exp body argument)
-     (lambda-exp body argument)]   
+     (closure body argument env)]
     [(let-exp var-exp binding-exp body-exp)
      (define variable-name (var-exp-var var-exp))
      (define variable-value (interp binding-exp env))
@@ -223,7 +242,14 @@ let z = 2:
  in if less?(z, 1) 1 0 
 ")
 
-(run "let f = proc(x) -(x, 11): in f(12)")
+#;(run "let f = proc(x) -(x, 11): in f(12)")
+     
+(run "
+let x = 200: 
+ in let f = proc (z) -(z,x): % f = z - 200
+  in let x = 100: % x = 100
+   in let g = proc (z) -(z,x):  %g = z - 100
+    in -(f(1), g(1)) % (1 - 200) - (1 - 100)")
 
 
 (module+ test
@@ -232,4 +258,11 @@ let z = 2:
   (check-pred let-exp?  (ast "let f = proc(x) -(x, 11): in f(f(77))"))
   (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
   (check-equal? (run "let f = proc(x) -(x, 11): in f(12)") 1)
-  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0))
+  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
+  (check-equal? -100 
+                (run "
+                      let x = 200: 
+                       in let f = proc (z) -(z,x): % f = z - 200
+                        in let x = 100: % x = 100
+                         in let g = proc (z) -(z,x):  %g = z - 100
+                          in -(f(1), g(1)) % (1 - 200) - (1 - 100)")))
