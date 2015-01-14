@@ -26,7 +26,7 @@
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
-     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC))
+     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC LETPROC))
 
 ;; Lexer for the LET Language, Chapter 3
 (define let-lexer
@@ -44,12 +44,15 @@
    ["let" 'LET]
    ["in" 'IN]
    ["proc" 'PROC]
+   ["letproc" 'LETPROC]
    ["zero?" 'ZERO]
    ["equal?" 'EQUAL]
    ["greater?" 'GREATER]
    ["less?" 'LESS]
    ["if" 'IF]
    [#\: 'ENDEQ]
+   ;; TODO: theres a bug with numbers in identifiers
+   ;; for example: sum1
    [(:+ (:or (char-range #\a #\z) (char-range #\A #\Z))) 
     ; =>
     (token-ID (string->symbol lexeme))]
@@ -98,6 +101,10 @@
          ;;PROCEDURES creation handler
          [(PROC LPAR exp RPAR exp) 
           (lambda-exp $3 $5)]
+         [(LETPROC exp LPAR exp RPAR exp ENDEQ IN exp)
+          (let-exp $2 ;procedure name
+                   (lambda-exp $4 $6) ;procedure body
+                   $9)] ; let expression body
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -140,6 +147,14 @@
   (for/fold ([tmp env]) ([(key value) (in-hash extend-env)]) 
     (hash-set tmp key value)))
 
+;;get the tokens
+;; string? -> list?
+(define (tokenize source)
+  (define (join-tokens input) 
+    (define token (let-lexer input))
+    (if (equal? token 'EOF) '() (cons token (join-tokens input))))
+  (define source-code (open-input-string source))
+  (join-tokens source-code))
 
 ;;get the AST
 ;; string? -> struct-exp
@@ -259,10 +274,17 @@ let x = 200:
   (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
   (check-equal? (run "let f = proc(x) -(x, 11): in f(12)") 1)
   (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
+  (check-equal? (run  "letproc sumone(x) +(x,1): in sumone(10)") 11)
+  (check-equal? 50
+                (run "
+                     let sum = proc (y) proc (x) +(x, y): 
+                      in let curry = sum(20): 
+                        in curry(30)")
   (check-equal? -100 
                 (run "
                       let x = 200: 
                        in let f = proc (z) -(z,x): % f = z - 200
                         in let x = 100: % x = 100
                          in let g = proc (z) -(z,x):  %g = z - 100
-                          in -(f(1), g(1)) % (1 - 200) - (1 - 100)")))
+                          in -(f(1),
+ g(1)) % (1 - 200) - (1 - 100)"))))
