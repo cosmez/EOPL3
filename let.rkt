@@ -1,32 +1,50 @@
 #lang racket
+
 (require parser-tools/lex
          (prefix-in : parser-tools/lex-sre)
          parser-tools/yacc)
 
+(require (for-syntax syntax/stx))
 
-(struct const-exp (num) #:transparent)
-(struct diff-exp (exp1 exp2) #:transparent)
-(struct zero?-exp (exp1) #:transparent)
-(struct equal?-exp (exp1 exp2) #:transparent)
-(struct greater?-exp (exp1 exp2) #:transparent)
-(struct less?-exp (exp1 exp2) #:transparent)
-(struct if-exp (exp1 exp2 exp3) #:transparent)
-(struct var-exp (var) #:transparent)
-(struct let-exp (var exp1 body) #:transparent)
-(struct add-exp (exp1 exp2) #:transparent)
-(struct minus-exp (exp) #:transparent)
-(struct mul-exp (exp1 exp2) #:transparent)
-(struct quotient-exp (exp1 exp2) #:transparent)
-(struct lambda-exp (argument body) #:transparent)
-(struct app-exp (procedure argument) #:transparent)
 
-(struct closure (argument body environment) #:transparent)
+;; define exp structs
+(define-syntax (def-exp stx)
+  (syntax-case stx ()
+    [(_ parent-exp child-exp ...)
+     #`(begin 
+         (struct parent-exp () #:transparent)
+         #,@(for/list ([exp (syntax->list #'(child-exp ...))])
+             #`(struct #,(stx-car exp) parent-exp #,(stx-car (stx-cdr exp)) 
+                 #:transparent)))]))
+
+
+(def-exp program-exp ; -> (struct program-exp () #:transparent)
+  [const-exp  (num)] ; -> (struct const-exp program-exp (num) #:transparent)
+  [diff-exp  (exp1 exp2)]
+  [zero?-exp  (exp1)]
+  [equal?-exp  (exp1 exp2)]
+  [greater?-exp  (exp1 exp2)]
+  [less?-exp  (exp1 exp2)]
+  [if-exp  (exp1 exp2 exp3)]
+  [var-exp  (var)]
+  [let-exp  (var exp1 body)]
+  [letrec-exp (proc var proc-body let-body)]
+  [add-exp  (exp1 exp2)]
+  [minus-exp  (exp)]
+  [mul-exp  (exp1 exp2)]
+  [quotient-exp   (exp1 exp2)]
+  [lambda-exp  (argument body)]
+  [app-exp  (procedure argument)])
+
+
+;; this is a value type
+(struct closure (argument body environment) #:transparent #:mutable) 
 
 
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
-     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC LETPROC))
+     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC LETPROC LETREC))
 
 ;; Lexer for the LET Language, Chapter 3
 (define let-lexer
@@ -42,9 +60,10 @@
    [#\, 'COMMA]
    [#\= 'EQ]
    ["let" 'LET]
+   ["letproc" 'LETPROC]
+   ["letrec" 'LETREC]
    ["in" 'IN]
    ["proc" 'PROC]
-   ["letproc" 'LETPROC]
    ["zero?" 'ZERO]
    ["equal?" 'EQUAL]
    ["greater?" 'GREATER]
@@ -105,6 +124,11 @@
           (let-exp $2 ;procedure name
                    (lambda-exp $4 $6) ;procedure body
                    $9)] ; let expression body
+         [(LETREC ID LPAR ID RPAR EQ exp ENDEQ IN exp)
+          (letrec-exp 
+           (var-exp $2) 
+           (var-exp $4) 
+           $7 $10)]
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -150,14 +174,14 @@
 ;;get the tokens
 ;; string? -> list?
 (define (tokenize source)
-  (define (join-tokens input) 
+  (define (join-tokens input)
     (define token (let-lexer input))
     (if (equal? token 'EOF) '() (cons token (join-tokens input))))
   (define source-code (open-input-string source))
   (join-tokens source-code))
 
 ;;get the AST
-;; string? -> struct-exp
+;; string? -> program-exp?
 (define (ast source)
   (define source-code (open-input-string source))
   (let-parser (lambda () (let-lexer source-code))))
@@ -171,7 +195,7 @@
 
 
 ;; interp the ast with the environment
-;; struct-exp ->  any?
+;; program-exp? ->  any?
 (define (interp exp env)
   (match exp
     [(const-exp num) num]
@@ -210,6 +234,16 @@
     ;; a lambda expression evaluates to a closure
     [(lambda-exp body argument)
      (closure body argument env)]
+    ;; recursive let
+    [(letrec-exp proc var proc-body let-body)
+     (define proc-name (var-exp-var proc))
+     (define proc-argument (var-exp-var var))
+     (define tmp-closure-env env)
+     (define new-closure (closure var proc-body tmp-closure-env))
+     (define let-environment (extend-env env proc-name new-closure))
+     (set-closure-environment! new-closure let-environment)
+     (interp let-body let-environment)
+     ]
     [(let-exp var-exp binding-exp body-exp)
      (define variable-name (var-exp-var var-exp))
      (define variable-value (interp binding-exp env))
@@ -259,12 +293,19 @@ let z = 2:
 
 #;(run "let f = proc(x) -(x, 11): in f(12)")
      
-(run "
+#;(run "
 let x = 200: 
  in let f = proc (z) -(z,x): % f = z - 200
   in let x = 100: % x = 100
    in let g = proc (z) -(z,x):  %g = z - 100
-    in -(f(1), g(1)) % (1 - 200) - (1 - 100)")
+     in -(f(1), g(1)) % (1 - 200) - (1 - 100)")
+     
+(run "
+letrec fact(x) = 
+        if zero?(x) 1 *(x,fact(-(x,1))): 
+  in fact(5)")
+
+;letrec fact(x) = if zero?(x) 1 *(x,fact(-x(x,1))): in fact(5)
 
 
 (module+ test
@@ -287,4 +328,9 @@ let x = 200:
                         in let x = 100: % x = 100
                          in let g = proc (z) -(z,x):  %g = z - 100
                           in -(f(1),
- g(1)) % (1 - 200) - (1 - 100)"))))
+ g(1)) % (1 - 200) - (1 - 100)")))
+  (check-equal? 120
+                (run "
+                     letrec fact(x) = 
+                             if zero?(x) 1 *(x,fact(-(x,1))): 
+                      in fact(5)")))
