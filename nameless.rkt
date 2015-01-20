@@ -1,5 +1,4 @@
 #lang racket
-
 (require parser-tools/lex
          (prefix-in : parser-tools/lex-sre)
          parser-tools/yacc)
@@ -46,10 +45,15 @@
 ;; this is a value type
 (struct closure (argument body environment) #:transparent #:mutable) 
 
+(struct nclosure (body environment) #:transparent #:mutable)
+
+
+
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
      MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC LETPROC LETREC))
+
 
 ;; Lexer for the LET Language, Chapter 3
 ;let-lexer : input-port? -> (or/c symbol? number?)
@@ -88,14 +92,13 @@
    [(union #\space #\newline) (let-lexer input-port)]
    [(eof) 'EOF]))
 
-
-
 ;;lex comment secitons % 
 (define let-comment-lexer
   (lexer
    [#\newline (let-lexer input-port)]
    [any-char (let-comment-lexer input-port)]
    [(eof) 'EOF]))
+
 
 
 ;;let token parser
@@ -161,140 +164,137 @@
 
 
 
+;; nameless interpreter for static environment
 
 
-;;Environment
-;; empty-env : -> hash?
-(define (empty-env)
-  (hash))
+;;environment management
+;empty-senv :  -> (listof symbol?)
+(define (empty-senv)
+  '())
 
-;; extend-env : hash? symbol? number? -> hash?
-(define (extend-env env var value)
-  (hash-set env var value))
+;extend-senv : symbol?  (listof symbol?) -> (listof symbol?)
+(define (extend-senv var senv)
+  (cons var senv))
 
-;; apply-env : hash? symbol? -> (or/c? closure number?)
-(define (apply-env env var)
-  (hash-ref env var))
-
-;; join-env : hash? hash? -> hash?
-(define (join-env env extend-env)
-  (for/fold ([tmp env]) ([(key value) (in-hash extend-env)]) 
-    (hash-set tmp key value)))
-
-;;get the AST
-;; string? -> program-exp?
-(define (ast source)
-  (define source-code (open-input-string source))
-  (let-parser (lambda () (let-lexer source-code))))
+;apply-senv : (listof symbol?) symbol? -> number?
+(define (apply-senv senv var)
+  (list-index senv var))
 
 
-;; run the AST
-;; string? -> (or/c closure? number?)
-(define (run source)
-  (interp (ast source) (empty-env)))
+;;translate whole programs
+;; translate-program : program-exp? -> program-exp?
+(define (translate-program program)
+  (translate-exp program (empty-senv)))
 
 
-
-;; interp the ast with the environment
-;; program-exp? ->  (or/c closure? number?)
-(define (interp exp env)
+;;translate exp
+(define (translate-exp exp senv)
   (match exp
-    [(const-exp num) num]
-    [(var-exp var) (apply-env env var)]
+    [(const-exp num) exp]
+    [(var-exp var) (nameless-var-exp  (apply-senv senv var))]
     ;;Arithmetic Operations
-    [(diff-exp exp1 exp2) (- (interp exp1 env) (interp exp2 env))]
-    [(add-exp exp1 exp2) (+ (interp exp1 env) (interp exp2 env))]
-    [(mul-exp exp1 exp2) (* (interp exp1 env) (interp exp2 env))]
-    [(quotient-exp exp1 exp2) (quotient (interp exp1 env) (interp exp2 env))]
-    [(minus-exp exp) (* (interp exp env) -1)]
+    [(diff-exp exp1 exp2) ;=>
+     (diff-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
+    [(add-exp exp1 exp2) ;=>
+     (add-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
+    [(mul-exp exp1 exp2) ;=>
+     (mul-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
+    [(quotient-exp exp1 exp2) ;=>
+     (quotient-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
+    [(minus-exp exp) ;=>
+     (minus-exp (translate-exp exp senv))]
     ;;Boolean Ops
-    [(zero?-exp exp) (= (interp exp env) 0)]
-    [(equal?-exp exp1 exp2) (= (interp exp1 env) (interp exp2 env))]
-    [(greater?-exp exp1 exp2) (> (interp exp1 env) (interp exp2 env))]
-    [(less?-exp exp1 exp2) (< (interp exp1 env)(interp exp2 env))]
+    [(zero?-exp exp) ;=>
+     (zero?-exp (translate-exp exp senv))]
+    [(equal?-exp exp1 exp2) 
+     ;=>
+     (equal?-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
+    [(greater?-exp exp1 exp2);=>
+     (greater?-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
+    [(less?-exp exp1 exp2);=>
+     (less?-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
     ;; Branching
-    [(if-exp cond-exp if-exp else-exp)
-     (define cond-result (interp cond-exp env))
-     (if cond-result (interp if-exp env) (interp else-exp env))]
+    [(if-exp cond-exp if-exp else-exp);=>
+     (if-exp (translate-exp cond-exp senv)
+             (translate-exp if-exp senv)
+             (translate-exp else-exp senv))]
     ;; proc language extension
     ;; application/closure expression
-    [(app-exp app-name app-body)
-     (match-define ;get the closure from the environment
-       (closure clos-argument clos-body clos-environment)
-       (apply-env env (var-exp-var app-name)))
-     ; this is the application exp, we need the result to feed the closure
-     (define app-body-value (interp app-body env))
-     ;the closure env is the current env plus the clos inner env
-     (define new-closure-env
-       (join-env 
-        ;the close argument gets replaced by the application result
-        (extend-env env (var-exp-var clos-argument) app-body-value) 
-        clos-environment))
-     (interp clos-body new-closure-env)]
+    [(app-exp app-name app-body);=>
+     (app-exp (translate-exp app-name senv) (translate-exp app-body senv))]
     ;; lambda expression
     ;; a lambda expression evaluates to a closure
-    [(lambda-exp body argument)
-     (closure body argument env)]
+    [(lambda-exp argument body);=>
+     (define argument-name (var-exp-var argument))
+     (nameless-lambda-exp 
+      (translate-exp 
+       body (extend-senv argument-name senv)))]
     ;; recursive let
-    [(letrec-exp proc var proc-body let-body)
-     (define proc-name (var-exp-var proc))
-     (define proc-argument (var-exp-var var))
-     (define tmp-closure-env env)
-     ;;closure with a tmp environment
-     (define new-closure (closure var proc-body tmp-closure-env))
-     (define let-environment (extend-env env proc-name new-closure))
-     ;;to be able to see the binding in the closure body
-     ;;we need to mutate the environment to include its own binding
-     (set-closure-environment! new-closure let-environment)
-     (interp let-body let-environment)]
-    [(let-exp var-exp binding-exp body-exp)
+    [(letrec-exp proc var proc-body let-body) ;=>
+     exp]
+    ;; normal let
+    [(let-exp var-exp binding-exp body-exp) ;=>
      (define variable-name (var-exp-var var-exp))
-     (define variable-value (interp binding-exp env)) 
-     (interp body-exp (extend-env env variable-name variable-value))]))
+     (nameless-let-exp 
+      (translate-exp binding-exp senv)
+      (translate-exp body-exp (extend-senv variable-name senv)))]))
+
+
+
+;;nameless valued environment
+;empty-env : -> (listof (or/c closure? number?))
+(define (empty-nenv)
+  '())
+
+;extend-nenv (or/c closure? number?)) (listof (or/c closure? number?)) -> (listof (or/c closure? number?))
+(define (extend-nenv value nenv)
+  (cons value nenv))
+
+;apply-nenv (listof (or/c closure? number?)) number? -> (or/c closure? number?)
+(define (apply-nenv nenv address)
+  (list-ref nenv address))
+
+;ninterp program-exp? (lisrof (or/c closure? number?)) -> (or/c closure? number?)
+(define (ninterp exp nenv)
+  (match exp
+    [(const-exp num) num]
+    [(nameless-var-exp ref) (apply-nenv nenv ref)]
+    ;;Arithmetic Operations
+    [(diff-exp exp1 exp2) (- (ninterp exp1 nenv) (ninterp exp2 nenv))]
+    [(add-exp exp1 exp2) (+ (ninterp exp1 nenv) (ninterp exp2 nenv))]
+    [(mul-exp exp1 exp2) (* (ninterp exp1 nenv) (ninterp exp2 nenv))]
+    [(quotient-exp exp1 exp2) (quotient (ninterp exp1 nenv) (ninterp exp2 nenv))]
+    [(minus-exp exp) (* (ninterp exp nenv) -1)]
+    ;;Boolean Ops
+    [(zero?-exp exp) (= (ninterp exp nenv) 0)]
+    [(equal?-exp exp1 exp2) (= (ninterp exp1 nenv) (ninterp exp2 nenv))]
+    [(greater?-exp exp1 exp2) (> (ninterp exp1 nenv) (ninterp exp2 nenv))]
+    [(less?-exp exp1 exp2) (< (ninterp exp1 nenv)(ninterp exp2 nenv))]
+    ;; Branching
+    [(if-exp cond-exp if-exp else-exp)
+     (define cond-result (ninterp cond-exp nenv))
+     (if cond-result (ninterp if-exp nenv) (ninterp else-exp nenv))]
+    ;; proc language extension
+    ;; application/closure expression
+    [(app-exp procedure argument)
+     (match-define 
+      (nclosure body-exp clos-nenv) ;=>
+      (ninterp procedure nenv))
+      (define argument-value (ninterp argument nenv))
+      (define body-nenv (extend-nenv body-value clos-nenv))
+      ;; TODO: is this correct?
+      (ninterp body-exp body-nenv)
+     ]
+    ;; lambda expression
+    ;; a lambda expression evaluates to a closure
+    [(nameless-lambda-exp body)
+     (nclosure body nenv)]
+    [(nameless-let-exp binding-exp body-exp);=>
+     (define binding-value (ninterp binding-exp nenv))
+     (define new-nenv (extend-nenv binding-value nenv))
+     (ninterp body-exp new-nenv)]))
 
 
 
 
-
-
-
-
-
-
-(run "
-letrec fact(x) = 
-        if zero?(x) 1 *(x,fact(-(x,1))): 
-  in fact(5)")
-
-;letrec fact(x) = if zero?(x) 1 *(x,fact(-x(x,1))): in fact(5)
-
-
-
-
-
-(module+ test
-  (require rackunit)
-  (check-pred lambda-exp? (ast "proc(x) -(x,11)"))
-  (check-pred let-exp?  (ast "let f = proc(x) -(x, 11): in f(f(77))"))
-  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
-  (check-equal? (run "let f = proc(x) -(x, 11): in f(12)") 1)
-  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
-  (check-equal? (run  "letproc sumone(x) +(x,1): in sumone(10)") 11)
-  (check-equal? 50
-                (run "
-                     let sum = proc (y) proc (x) +(x, y): 
-                      in let curry = sum(20): 
-                        in curry(30)")
-  (check-equal? -100 
-                (run "
-                      let x = 200: 
-                       in let f = proc (z) -(z,x): % f = z - 200
-                        in let x = 100: % x = 100
-                         in let g = proc (z) -(z,x):  %g = z - 100
-                          in -(f(1),
- g(1)) % (1 - 200) - (1 - 100)")))
-  (check-equal? 120
-                (run "
-                     letrec fact(x) = 
-                             if zero?(x) 1 *(x,fact(-(x,1))): 
-                      in fact(5)")))
+(define test-prg "let x = 37: in proc(y) let z = -(x, y): in -(x,z)")
