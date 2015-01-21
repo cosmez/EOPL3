@@ -41,7 +41,10 @@
   ;nameless interpreter for static environments
   [nameless-var-exp (num)]
   [nameless-let-exp (exp1 body)]
-  [nameless-lambda-exp (body)])
+  [nameless-lambda-exp (body)]
+  ;state management
+  [begin-exp (exp1 exp2)]
+  [display-exp (exp)])
 
 ;; this is a value type
 (struct closure (argument body environment) #:transparent #:mutable) 
@@ -49,7 +52,8 @@
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
-     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC LETPROC LETREC))
+     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC 
+     LETPROC LETREC BEGIN END DISPLAY SEMICOLON))
 
 ;; Lexer for the LET Language, Chapter 3
 ;let-lexer : input-port? -> (or/c symbol? number?)
@@ -75,10 +79,14 @@
    ["greater?" 'GREATER]
    ["less?" 'LESS]
    ["if" 'IF]
+   ["begin" 'BEGIN]
+   [";" 'SEMICOLON]
+   ["end" 'END]
+   ["display" 'DISPLAY]
    [#\: 'ENDEQ]
    ;; TODO: theres a bug with numbers in identifiers
    ;; for example: sum1
-   [(:+ (:or (char-range #\a #\z) (char-range #\A #\Z))) 
+   [(:+ (:or (char-range #\a #\z) (char-range #\A #\Z)))
     ; =>
     (token-ID (string->symbol lexeme))]
    [(:+ (:or (char-range #\0 #\9) #\.)) 
@@ -136,6 +144,11 @@
            (var-exp $2) 
            (var-exp $4) 
            $7 $10)]
+         ;;STATE
+         [(BEGIN exp SEMICOLON exp END)
+          (begin-exp $2 $4)]
+         [(DISPLAY exp)
+          (display-exp $2)]
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -161,6 +174,19 @@
 
 
 
+;;Global Store
+;;Environment
+;; empty-store : -> hash?
+(define (empty-store)
+  (hash))
+
+;; extend-store : hash? number? number? -> hash?
+(define (extend-store store address value)
+  (hash-set store address value))
+
+;; apply-env : hash? symbol? -> (or/c? closure number?)
+(define (apply-store store var)
+  (hash-ref store var))
 
 
 ;;Environment
@@ -247,6 +273,12 @@
      ;;we need to mutate the environment to include its own binding
      (set-closure-environment! new-closure let-environment)
      (interp let-body let-environment)]
+    ;;state management
+    [(display-exp exp1)
+     (displayln (interp  exp1 env))]
+    [(begin-exp exp1 exp2)
+     (interp exp1 env)
+     (interp exp2 env)]
     [(let-exp var-exp binding-exp body-exp)
      (define variable-name (var-exp-var var-exp))
      (define variable-value (interp binding-exp env)) 
@@ -261,10 +293,7 @@
 
 
 
-(run "
-letrec fact(x) = 
-        if zero?(x) 1 *(x,fact(-(x,1))): 
-  in fact(5)")
+(run "begin display 2; 10 end")
 
 ;letrec fact(x) = if zero?(x) 1 *(x,fact(-x(x,1))): in fact(5)
 

@@ -1,4 +1,32 @@
 #lang racket
+
+;; <program>   ::=  <exp> | <exp> <program>
+;; <block>     ::=  '{'  { <exp> [';'] } <exp>  '}' | <exp>
+;; <exp>       ::=  <number>
+;;             ::=  <boolean>
+;;             ::=  <string>
+;;             ::=  <var>
+;;             ::=  (<varlist>) -> <block>         
+;;             ::=  <funcname> '(' <explist> ')'
+;;             ::=  let <varlist> = <explist>
+;;             ::=  let <var> <funcname>(<varlist>) = <block>
+;;             ::=  fn <funcname>(<varlist>) <block>
+;;             ::=  if <exp> <block> {elseif <block>} [else <block>]
+;;             ::=  <exp> <binop> <exp>
+;;             ::=  <unop> <exp>
+;; <newline>   ::=  \n
+;; <funcname>  ::=  (\w[\d]?)+
+;; <var>       ::=  (\w[\d]?)+
+;; <varlist>   ::=  <var> {',' <var>}
+;; <explist>   ::=  {<exp> ','} <exp>
+;; <number>    ::=  [-0-9\.]+
+;; <boolean>   ::=  false | false
+;; <string>    ::=  ((?:\\.|[^\\:])*)(?::|$)
+;; <binop>     ::=  '+'' | '-' | '*' | '/' | '^' | '%' | '..' | '<' | '<=' | '>' | '>=' | '==' | '!=' | 'and' | 'or' | '*' | '&'
+;; <unop>      ::=  '-' | 'not' | '#'
+
+
+
 (require parser-tools/lex
          (prefix-in : parser-tools/lex-sre)
          parser-tools/yacc)
@@ -32,6 +60,7 @@
   [minus-exp  (exp)]
   [mul-exp  (exp1 exp2)]
   [quotient-exp   (exp1 exp2)]
+  [begin-exp (exp1 exp2)]
   ;proc interpreter
   [lambda-exp  (argument body)]
   [app-exp  (procedure argument)]
@@ -42,17 +71,20 @@
   [nameless-let-exp (exp1 body)]
   [nameless-lambda-exp (body)])
 
-;; this is a value type
-(struct closure (argument body environment) #:transparent #:mutable) 
+(def-exp value-exp
+  [text (value)]
+  [numeric (value)]
+  [closure (argument body environment)]
+  [reference (address)]
+  [pair (left right)]
+  [nclosure (body environment)])
 
-(struct nclosure (body environment) #:transparent #:mutable)
-
-
-
+ 
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
-     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC LETPROC LETREC))
+     MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC LETPROC LETREC
+     BEGIN END))
 
 
 ;; Lexer for the LET Language, Chapter 3
@@ -82,7 +114,7 @@
    [#\: 'ENDEQ]
    ;; TODO: theres a bug with numbers in identifiers
    ;; for example: sum1
-   [(:+ (:or (char-range #\a #\z) (char-range #\A #\Z))) 
+   [(:+ (:or (char-range #\a #\z) (char-range #\A #\Z)))
     ; =>
     (token-ID (string->symbol lexeme))]
    [(:+ (:or (char-range #\0 #\9) #\.)) 
@@ -187,112 +219,6 @@
   (translate-exp program (empty-senv)))
 
 
-;;translate exp
-(define (translate-exp exp senv)
-  (match exp
-    [(const-exp num) (const-exp num)]
-    [(var-exp var) (nameless-var-exp  (apply-senv senv var))]
-    ;;Arithmetic Operations
-    [(diff-exp exp1 exp2) ;=>
-     (diff-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
-    [(add-exp exp1 exp2) ;=>
-     (add-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
-    [(mul-exp exp1 exp2) ;=>
-     (mul-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
-    [(quotient-exp exp1 exp2) ;=>
-     (quotient-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
-    [(minus-exp exp) ;=>
-     (minus-exp (translate-exp exp senv))]
-    ;;Boolean Ops
-    [(zero?-exp exp) ;=>
-     (zero?-exp (translate-exp exp senv))]
-    [(equal?-exp exp1 exp2) 
-     ;=>
-     (equal?-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
-    [(greater?-exp exp1 exp2);=>
-     (greater?-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
-    [(less?-exp exp1 exp2);=>
-     (less?-exp (translate-exp exp1 senv) (translate-exp exp2 senv))]
-    ;; Branching
-    [(if-exp cond-exp true-exp false-exp);=>
-     (if-exp (translate-exp cond-exp senv)
-             (translate-exp true-exp senv)
-             (translate-exp false-exp senv))]
-    ;; proc language extension
-    ;; application/closure expression
-    [(app-exp app-name app-body);=>
-     (app-exp (translate-exp app-name senv) (translate-exp app-body senv))]
-    ;; lambda expression
-    ;; a lambda expression evaluates to a closure
-    [(lambda-exp argument body);=>
-     (define argument-name (var-exp-var argument))
-     (nameless-lambda-exp 
-      (translate-exp 
-       body (extend-senv argument-name senv)))]
-    ;; recursive let
-    [(letrec-exp proc var proc-body let-body) ;=>
-     exp]
-    ;; normal let
-    [(let-exp var-exp binding-exp body-exp) ;=>
-     (define variable-name (var-exp-var var-exp))
-     (nameless-let-exp 
-      (translate-exp binding-exp senv)
-      (translate-exp body-exp (extend-senv variable-name senv)))]))
-
-
-
-;;nameless valued environment
-;empty-env : -> (listof (or/c closure? number?))
-(define (empty-nenv)
-  '())
-
-;extend-nenv (or/c closure? number?)) (listof (or/c closure? number?)) -> (listof (or/c closure? number?))
-(define (extend-nenv value nenv)
-  (cons value nenv))
-
-;apply-nenv (listof (or/c closure? number?)) number? -> (or/c closure? number?)
-(define (apply-nenv nenv address)
-  (list-ref nenv address))
-
-;ninterp program-exp? (lisrof (or/c closure? number?)) -> (or/c closure? number?)
-(define (ninterp exp nenv)
-  (match exp
-    [(const-exp num) num]
-    [(nameless-var-exp ref) (apply-nenv nenv ref)]
-    ;;Arithmetic Operations
-    [(diff-exp exp1 exp2) (- (ninterp exp1 nenv) (ninterp exp2 nenv))]
-    [(add-exp exp1 exp2) (+ (ninterp exp1 nenv) (ninterp exp2 nenv))]
-    [(mul-exp exp1 exp2) (* (ninterp exp1 nenv) (ninterp exp2 nenv))]
-    [(quotient-exp exp1 exp2) (quotient (ninterp exp1 nenv) (ninterp exp2 nenv))]
-    [(minus-exp exp) (* (ninterp exp nenv) -1)]
-    ;;Boolean Ops
-    [(zero?-exp exp) (= (ninterp exp nenv) 0)]
-    [(equal?-exp exp1 exp2) (= (ninterp exp1 nenv) (ninterp exp2 nenv))]
-    [(greater?-exp exp1 exp2) (> (ninterp exp1 nenv) (ninterp exp2 nenv))]
-    [(less?-exp exp1 exp2) (< (ninterp exp1 nenv)(ninterp exp2 nenv))]
-    ;; Branching
-    [(if-exp cond-exp if-exp else-exp)
-     (define cond-result (ninterp cond-exp nenv))
-     (if cond-result (ninterp if-exp nenv) (ninterp else-exp nenv))]
-    ;; proc language extension
-    ;; application/closure expression
-    [(app-exp procedure argument)
-     (match-define 
-      (nclosure body-exp clos-nenv) ;=>
-      (ninterp procedure nenv))
-      (define argument-value (ninterp argument nenv))
-      (define body-nenv (extend-nenv argument-value clos-nenv))
-      ;; TODO: is this correct?
-      (ninterp body-exp body-nenv)
-     ]
-    ;; lambda expression
-    ;; a lambda expression evaluates to a closure
-    [(nameless-lambda-exp body)
-     (nclosure body nenv)]
-    [(nameless-let-exp binding-exp body-exp);=>
-     (define binding-value (ninterp binding-exp nenv))
-     (define new-nenv (extend-nenv binding-value nenv))
-     (ninterp body-exp new-nenv)]))
 
 
 ;;get the AST
@@ -302,17 +228,10 @@
   (let-parser (lambda () (let-lexer source-code))))
 
 
-;; run the AST
-;; string? -> (or/c closure? number?)
-(define (run source)
-  (ninterp (translate-program (ast source) ) (empty-nenv)))
-
 
 (define test-prg "let x = 37: in proc(y) let z = -(x, y): in -(x,z)")
 
 ;(run "proc(x) -(x,11)")
-
-
 (module+ test
   (require rackunit)
   (check-pred lambda-exp? (ast "proc(x) -(x,11)"))
