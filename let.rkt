@@ -47,7 +47,8 @@
   [display-exp (exp)]
   [deref-exp (exp)]
   [newref-exp (exp)]
-  [setref!-exp (exp1 exp2)])
+  [setref!-exp (exp1 exp2)]
+  [set!-exp (exp1 exp2)])
 
 ;; this is a value type
 (struct closure (argument body environment) #:transparent #:mutable)
@@ -58,7 +59,7 @@
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
      MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC 
      LETPROC LETREC BEGIN END DISPLAY SEMICOLON
-     NEWREF DEREF SETREF!))
+     NEWREF DEREF SETREF! SET!))
 
 ;; Lexer for the LET Language, Chapter 3
 ;let-lexer : input-port? -> (or/c symbol? number?)
@@ -91,6 +92,7 @@
    ["newref" 'NEWREF]
    ["deref" 'DEREF]
    ["setref!" 'SETREF!]
+   ["set!" 'SET!]
    [#\: 'ENDEQ]
    ;; TODO: theres a bug with numbers in identifiers
    ;; for example: sum1
@@ -163,6 +165,8 @@
           (setref!-exp $3 $5)]
          [(DEREF LPAR exp RPAR)
           (deref-exp $3)]
+         [(SET! LPAR exp COMMA exp RPAR)
+          (set!-exp $3 $5)]
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -225,11 +229,18 @@
 
 ;; extend-env : hash? symbol? number? -> hash?
 (define (extend-env env var value)
-  (hash-set env var value))
+  (hash-set env var (new-reference value)))
 
 ;; apply-env : hash? symbol? -> (or/c? closure number?)
 (define (apply-env env var)
-  (hash-ref env var))
+  (define ref (hash-ref env var))
+  (de-reference ref))
+
+
+;; set-env! : hash? symbol? -> (or/c closure? number?)
+(define (set-env! env var val)
+  (set-reference! (hash-ref env var) val)
+  val)
 
 ;; join-env : hash? hash? -> hash?
 (define (join-env env extend-env)
@@ -253,14 +264,19 @@
 ;; interp the ast with the environment
 ;; program-exp? ->  (or/c closure? number? reference?)
 (define (interp exp env)
+  (displayln env)
   (match exp
     [(const-exp num) num]
-    [(newref-exp exp) 
+    ;;state management
+    [(newref-exp exp)
      (new-reference (interp exp env))]
     [(deref-exp exp);=>
      (de-reference (interp exp env))]
     [(setref!-exp exp1 exp2)
      (set-reference! (interp exp1 env) (interp exp2 env))]
+    [(set!-exp exp1 exp2)
+     (define value (interp exp2 env))
+     (set-env! env (var-exp-var exp1) value)]
     [(var-exp var) (apply-env env var)]
     ;;Arithmetic Operations
     [(diff-exp exp1 exp2) (- (interp exp1 env) (interp exp2 env))]
@@ -321,13 +337,6 @@
 
 
 
-
-(run "begin display 2; 10 end")
-
-;letrec fact(x) = if zero?(x) 1 *(x,fact(-x(x,1))): in fact(5)
-
-
-
 (module+ test
   (require rackunit)
   (check-pred lambda-exp? (ast "proc(x) -(x,11)"))
@@ -353,4 +362,5 @@
                 (run "
                      letrec fact(x) = 
                              if zero?(x) 1 *(x,fact(-(x,1))): 
-                      in fact(5)")))
+                      in fact(5)"))
+  (check-equal? 10 (run "let z = newref(10): in begin setref!(z, 20); -(deref(z),10) end")))
