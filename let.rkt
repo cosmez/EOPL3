@@ -44,16 +44,21 @@
   [nameless-lambda-exp (body)]
   ;state management
   [begin-exp (exp1 exp2)]
-  [display-exp (exp)])
+  [display-exp (exp)]
+  [deref-exp (exp)]
+  [newref-exp (exp)]
+  [setref!-exp (exp1 exp2)])
 
 ;; this is a value type
-(struct closure (argument body environment) #:transparent #:mutable) 
+(struct closure (argument body environment) #:transparent #:mutable)
+(struct reference (address) #:transparent #:mutable)
 
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
      MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC 
-     LETPROC LETREC BEGIN END DISPLAY SEMICOLON))
+     LETPROC LETREC BEGIN END DISPLAY SEMICOLON
+     NEWREF DEREF SETREF!))
 
 ;; Lexer for the LET Language, Chapter 3
 ;let-lexer : input-port? -> (or/c symbol? number?)
@@ -83,6 +88,9 @@
    [";" 'SEMICOLON]
    ["end" 'END]
    ["display" 'DISPLAY]
+   ["newref" 'NEWREF]
+   ["deref" 'DEREF]
+   ["setref!" 'SETREF!]
    [#\: 'ENDEQ]
    ;; TODO: theres a bug with numbers in identifiers
    ;; for example: sum1
@@ -149,6 +157,12 @@
           (begin-exp $2 $4)]
          [(DISPLAY exp)
           (display-exp $2)]
+         [(NEWREF LPAR exp RPAR)
+          (newref-exp $3)]
+         [(SETREF! LPAR exp COMMA exp RPAR)
+          (setref!-exp $3 $5)]
+         [(DEREF LPAR exp RPAR)
+          (deref-exp $3)]
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -169,24 +183,39 @@
          [(LESS LPAR exp COMMA exp RPAR)
           (less?-exp $3 $5)]
          [(exp LPAR exp RPAR)
-          (app-exp $1 $3)]
-         ))))
+          (app-exp $1 $3)]))))
 
 
 
 ;;Global Store
 ;;Environment
 ;; empty-store : -> hash?
-(define (empty-store)
-  (hash))
+(define (new-store)
+  '())
 
-;; extend-store : hash? number? number? -> hash?
-(define (extend-store store address value)
-  (hash-set store address value))
+;global store
+(define *STORE* '())
 
-;; apply-env : hash? symbol? -> (or/c? closure number?)
-(define (apply-store store var)
-  (hash-ref store var))
+(define store? list?)
+
+; de-reference : reference? -> (or/c? closure? number? reference?)
+(define (de-reference ref)
+  (list-ref *STORE* (reference-address ref)))
+
+; new-reference : (or/c? closure? number? reference?) -> reference?
+(define (new-reference value)
+  (set! *STORE* (append *STORE* (list value)))
+  (reference (sub1 (length *STORE*))))
+
+; set-reference :: store? (or/c? closure? number? reference?) -> reference?
+(define (set-reference! ref  value)
+  (define address (reference-address ref))
+  (set! 
+   *STORE* 
+   (for/list 
+       ([el *STORE*] [i (in-naturals)]) 
+     (if (= address i) value el)))
+  address)
 
 
 ;;Environment
@@ -222,10 +251,16 @@
 
 
 ;; interp the ast with the environment
-;; program-exp? ->  (or/c closure? number?)
+;; program-exp? ->  (or/c closure? number? reference?)
 (define (interp exp env)
   (match exp
     [(const-exp num) num]
+    [(newref-exp exp) 
+     (new-reference (interp exp env))]
+    [(deref-exp exp);=>
+     (de-reference (interp exp env))]
+    [(setref!-exp exp1 exp2)
+     (set-reference! (interp exp1 env) (interp exp2 env))]
     [(var-exp var) (apply-env env var)]
     ;;Arithmetic Operations
     [(diff-exp exp1 exp2) (- (interp exp1 env) (interp exp2 env))]
@@ -287,17 +322,9 @@
 
 
 
-
-
-
-
-
-
 (run "begin display 2; 10 end")
 
 ;letrec fact(x) = if zero?(x) 1 *(x,fact(-x(x,1))): in fact(5)
-
-
 
 
 
