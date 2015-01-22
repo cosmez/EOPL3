@@ -48,18 +48,26 @@
   [deref-exp (exp)]
   [newref-exp (exp)]
   [setref!-exp (exp1 exp2)]
-  [set!-exp (exp1 exp2)])
+  [set!-exp (exp1 exp2)]
+  [pair-exp (exp1 exp2)]
+  [first-exp (exp)]
+  [rest-exp (exp)]
+  [set-first!-exp (exp1 exp2)]
+  [set-rest!-exp (exp1 exp2)])
 
 ;; this is a value type
 (struct closure (argument body environment) #:transparent #:mutable)
 (struct reference (address) #:transparent #:mutable)
+(struct tuple (first rest) #:transparent #:mutable)
+
+(define let-value? (or/c closure? number? reference? tuple?))
 
 (define-tokens value-tokens (NUM ID))
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
      MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC 
      LETPROC LETREC BEGIN END DISPLAY SEMICOLON
-     NEWREF DEREF SETREF! SET!))
+     NEWREF DEREF SETREF! SET! PAIR FIRST REST SET-FIRST! SET-REST!))
 
 ;; Lexer for the LET Language, Chapter 3
 ;let-lexer : input-port? -> (or/c symbol? number?)
@@ -93,6 +101,11 @@
    ["deref" 'DEREF]
    ["setref!" 'SETREF!]
    ["set!" 'SET!]
+   ["pair" 'PAIR]
+   ["first" 'FIRST]
+   ["rest" 'REST]
+   ["set-first!" 'SET-FIRST!]
+   ["set-rest!" 'SET-REST!]
    [#\: 'ENDEQ]
    ;; TODO: theres a bug with numbers in identifiers
    ;; for example: sum1
@@ -167,6 +180,17 @@
           (deref-exp $3)]
          [(SET! LPAR exp COMMA exp RPAR)
           (set!-exp $3 $5)]
+         ;;MUTABLE PAIRS
+         [(PAIR LPAR exp COMMA exp RPAR)
+          (pair-exp $3 $5)]
+         [(FIRST LPAR exp RPAR)
+          (first-exp $3)]
+         [(REST LPAR exp RPAR)
+          (rest-exp $3)]
+         ([SET-FIRST! LPAR exp COMMA exp RPAR]
+          (set-first!-exp $3 $5))
+         ([SET-REST! LPAR exp COMMA exp RPAR]
+          (set-rest!-exp $3 $5))
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -202,16 +226,16 @@
 
 (define store? list?)
 
-; de-reference : reference? -> (or/c? closure? number? reference?)
+; de-reference : reference? -> let-value?
 (define (de-reference ref)
   (list-ref *STORE* (reference-address ref)))
 
-; new-reference : (or/c? closure? number? reference?) -> reference?
+; new-reference : let-value? -> reference?
 (define (new-reference value)
   (set! *STORE* (append *STORE* (list value)))
   (reference (sub1 (length *STORE*))))
 
-; set-reference :: store? (or/c? closure? number? reference?) -> reference?
+; set-reference :: store? let-value? -> reference?
 (define (set-reference! ref  value)
   (define address (reference-address ref))
   (set! 
@@ -231,13 +255,13 @@
 (define (extend-env env var value)
   (hash-set env var (new-reference value)))
 
-;; apply-env : hash? symbol? -> (or/c? closure number?)
+;; apply-env : hash? symbol? -> let-value?
 (define (apply-env env var)
   (define ref (hash-ref env var))
   (de-reference ref))
 
 
-;; set-env! : hash? symbol? -> (or/c closure? number?)
+;; set-env! : hash? symbol? -> let-value?
 (define (set-env! env var val)
   (set-reference! (hash-ref env var) val)
   val)
@@ -255,14 +279,14 @@
 
 
 ;; run the AST
-;; string? -> (or/c closure? number?)
+;; string? -> let-value?
 (define (run source)
   (interp (ast source) (empty-env)))
 
 
 
 ;; interp the ast with the environment
-;; program-exp? ->  (or/c closure? number? reference?)
+;; program-exp? ->  (or/c closure? number? reference? pair?)
 (define (interp exp env)
   (displayln env)
   (match exp
@@ -277,6 +301,23 @@
     [(set!-exp exp1 exp2)
      (define value (interp exp2 env))
      (set-env! env (var-exp-var exp1) value)]
+    ;;mutable pairs
+    [(pair-exp exp1 exp2)
+     (define first-value (interp exp1 env))
+     (define second-value (interp exp2 env))
+     (tuple (new-reference first-value) (new-reference second-value))]
+    [(first-exp exp);=>
+     (define ref (tuple-first (interp exp env)))
+     (de-reference ref)]
+    [(rest-exp exp)
+     (define ref (tuple-rest (interp exp env)))
+     (de-reference ref)]
+    [(set-first!-exp exp1 exp2)
+     (define ref (tuple-first (interp exp1 env)))
+     (set-reference! ref (interp exp2 env))]
+    [(set-rest!-exp exp1 exp2)
+     (define ref (tuple-rest (interp exp1 env)))
+     (set-reference! ref (interp exp2 env))]
     [(var-exp var) (apply-env env var)]
     ;;Arithmetic Operations
     [(diff-exp exp1 exp2) (- (interp exp1 env) (interp exp2 env))]
@@ -341,10 +382,10 @@
   (require rackunit)
   (check-pred lambda-exp? (ast "proc(x) -(x,11)"))
   (check-pred let-exp?  (ast "let f = proc(x) -(x, 11): in f(f(77))"))
-  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
-  (check-equal? (run "let f = proc(x) -(x, 11): in f(12)") 1)
-  (check-equal? (run "let z = 2: in if less?(z,1) 1 0") 0)
-  (check-equal? (run  "letproc sumone(x) +(x,1): in sumone(10)") 11)
+  (check-equal?  0 (run "let z = 2: in if less?(z,1) 1 0"))
+  (check-equal?  1 (run "let f = proc(x) -(x, 11): in f(12)"))
+  (check-equal?  0 (run "let z = 2: in if less?(z,1) 1 0") )
+  (check-equal? 11 (run  "letproc sumone(x) +(x,1): in sumone(10)"))
   (check-equal? 50
                 (run "
                      let sum = proc (y) proc (x) +(x, y): 
@@ -363,4 +404,5 @@
                      letrec fact(x) = 
                              if zero?(x) 1 *(x,fact(-(x,1))): 
                       in fact(5)"))
-  (check-equal? 10 (run "let z = newref(10): in begin setref!(z, 20); -(deref(z),10) end")))
+  (check-equal? 10 (run "let z = newref(10): in begin setref!(z, 20); -(deref(z),10) end"))
+  (check-equal? 10 (run "let x = 10: in begin set!(x,20); -(x,10) end")))
