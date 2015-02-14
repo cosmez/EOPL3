@@ -44,16 +44,7 @@
   [nameless-lambda-exp (body)]
   ;state management
   [begin-exp (exp1 exp2)]
-  [display-exp (exp)]
-  [deref-exp (exp)]
-  [newref-exp (exp)]
-  [setref!-exp (exp1 exp2)]
-  [set!-exp (exp1 exp2)]
-  [pair-exp (exp1 exp2)]
-  [first-exp (exp)]
-  [rest-exp (exp)]
-  [set-first!-exp (exp1 exp2)]
-  [set-rest!-exp (exp1 exp2)])
+  [display-exp (exp)])
 
 ;; this is a value type
 (struct closure (argument body environment) #:transparent #:mutable)
@@ -66,8 +57,7 @@
 (define-empty-tokens op-tokens 
   (= LET EQ ENDEQ IN LPAR RPAR COMMA SUB EOF ZERO IF 
      MINUS ADD MUL QUOTIENT EQUAL GREATER LESS PROC 
-     LETPROC LETREC BEGIN END DISPLAY SEMICOLON
-     NEWREF DEREF SETREF! SET! PAIR FIRST REST SET-FIRST! SET-REST!))
+     LETPROC LETREC BEGIN END DISPLAY SEMICOLON))
 
 ;; Lexer for the LET Language, Chapter 3
 ;let-lexer : input-port? -> (or/c symbol? number?)
@@ -96,16 +86,6 @@
    ["begin" 'BEGIN]
    [";" 'SEMICOLON]
    ["end" 'END]
-   ["display" 'DISPLAY]
-   ["newref" 'NEWREF]
-   ["deref" 'DEREF]
-   ["setref!" 'SETREF!]
-   ["set!" 'SET!]
-   ["pair" 'PAIR]
-   ["first" 'FIRST]
-   ["rest" 'REST]
-   ["set-first!" 'SET-FIRST!]
-   ["set-rest!" 'SET-REST!]
    [#\: 'ENDEQ]
    ;; TODO: theres a bug with numbers in identifiers
    ;; for example: sum1
@@ -172,25 +152,6 @@
           (begin-exp $2 $4)]
          [(DISPLAY exp)
           (display-exp $2)]
-         [(NEWREF LPAR exp RPAR)
-          (newref-exp $3)]
-         [(SETREF! LPAR exp COMMA exp RPAR)
-          (setref!-exp $3 $5)]
-         [(DEREF LPAR exp RPAR)
-          (deref-exp $3)]
-         [(SET! LPAR exp COMMA exp RPAR)
-          (set!-exp $3 $5)]
-         ;;MUTABLE PAIRS
-         [(PAIR LPAR exp COMMA exp RPAR)
-          (pair-exp $3 $5)]
-         [(FIRST LPAR exp RPAR)
-          (first-exp $3)]
-         [(REST LPAR exp RPAR)
-          (rest-exp $3)]
-         ([SET-FIRST! LPAR exp COMMA exp RPAR]
-          (set-first!-exp $3 $5))
-         ([SET-REST! LPAR exp COMMA exp RPAR]
-          (set-rest!-exp $3 $5))
          ;;SUB MINUS ADD MUL QUOTIENT
          [(SUB LPAR exp COMMA exp RPAR)
           (diff-exp $3 $5)]
@@ -214,39 +175,6 @@
           (app-exp $1 $3)]))))
 
 
-(define (t a) (d))
-
-;;Global Store
-;;Environment
-;; empty-store : -> hash?
-(define (new-store)
-  '())
-
-;global store
-(define *STORE* '())
-
-(define store? list?)
-
-; de-reference : reference? -> let-value?
-(define (de-reference ref)
-  (list-ref *STORE* (reference-address ref)))
-
-; new-reference : let-value? -> reference?
-(define (new-reference value)
-  (set! *STORE* (append *STORE* (list value)))
-  (reference (sub1 (length *STORE*))))
-
-; set-reference :: store? let-value? -> reference?
-(define (set-reference! ref  value)
-  (define address (reference-address ref))
-  (set! 
-   *STORE* 
-   (for/list 
-       ([el *STORE*] [i (in-naturals)]) 
-     (if (= address i) value el)))
-  address)
-
-
 ;;Environment
 ;; empty-env : -> hash?
 (define (empty-env)
@@ -254,18 +182,12 @@
 
 ;; extend-env : hash? symbol? number? -> hash?
 (define (extend-env env var value)
-  (hash-set env var (new-reference value)))
+  (hash-set env var value))
 
 ;; apply-env : hash? symbol? -> let-value?
 (define (apply-env env var)
-  (define ref (hash-ref env var))
-  (de-reference ref))
+  (hash-ref env var))
 
-
-;; set-env! : hash? symbol? -> let-value?
-(define (set-env! env var val)
-  (set-reference! (hash-ref env var) val)
-  val)
 
 ;; join-env : hash? hash? -> hash?
 (define (join-env env extend-env)
@@ -282,78 +204,68 @@
 ;; run the AST
 ;; string? -> let-value?
 (define (run source)
-  (interp (ast source) (empty-env)))
+  (interp (ast source) (empty-env) end-cont))
+
+;; apply-cont : lambda? let-value? 
+(define (apply-cont cont value)
+  (cont value))
+
+;;end-cont : let-value? void?
+(define (end-cont v)
+  (printf "End of Computation: ~a\n" v))
+
+;;zero-cont : continuation? -> let-value?
+(define (zero-cont k)
+  (lambda (val)
+    (apply-cont k (= val 0))))
+
+;;let-cont symbol? program-exp? environment? continuation? -> let-value?
+(define (let-exp-cont variable-name body-exp env k)
+  (lambda (val)
+    (interp body-exp 
+            (extend-env env variable-name val)
+            k)))
 
 
+
+(define (if-cont if-exp else-exp env k)
+  (lambda (cond-val) 
+    (if cond-val 
+        (interp if-exp env k) 
+        (interp else-exp env k))))
+
+
+(define (app-cont app-name env k)
+  (lambda (app-body-result)
+    (match-define ;get the closure from the environment
+     (closure clos-argument clos-body clos-environment)
+     (apply-env env (var-exp-var app-name)))
+    (define app-body-value app-body-result)
+    (define new-closure-env
+      (join-env 
+       ;the close- argument gets replaced by the application result
+       (extend-env env (var-exp-var clos-argument) app-body-value) 
+       clos-environment))
+    (interp clos-body new-closure-env k)))
 
 ;; interp the ast with the environment
-;; program-exp? ->  (or/c closure? number? reference? pair?)
-(define (interp exp env)
-  (displayln env)
+;; program-exp? ->  let-value?
+(define (interp exp env k)
+  (printf "~a =/= ~a\n" exp env)
   (match exp
-    [(const-exp num) num]
-    ;;state management
-    [(newref-exp exp)
-     (new-reference (interp exp env))]
-    [(deref-exp exp);=>
-     (de-reference (interp exp env))]
-    [(setref!-exp exp1 exp2)
-     (set-reference! (interp exp1 env) (interp exp2 env))]
-    [(set!-exp exp1 exp2)
-     (define value (interp exp2 env))
-     (set-env! env (var-exp-var exp1) value)]
-    ;;mutable pairs
-    [(pair-exp exp1 exp2)
-     (define first-value (interp exp1 env))
-     (define second-value (interp exp2 env))
-     (tuple (new-reference first-value) (new-reference second-value))]
-    [(first-exp exp);=>
-     (define ref (tuple-first (interp exp env)))
-     (de-reference ref)]
-    [(rest-exp exp)
-     (define ref (tuple-rest (interp exp env)))
-     (de-reference ref)]
-    [(set-first!-exp exp1 exp2)
-     (define ref (tuple-first (interp exp1 env)))
-     (set-reference! ref (interp exp2 env))]
-    [(set-rest!-exp exp1 exp2)
-     (define ref (tuple-rest (interp exp1 env)))
-     (set-reference! ref (interp exp2 env))]
-    [(var-exp var) (apply-env env var)]
-    ;;Arithmetic Operations
-    [(diff-exp exp1 exp2) (- (interp exp1 env) (interp exp2 env))]
-    [(add-exp exp1 exp2) (+ (interp exp1 env) (interp exp2 env))]
-    [(mul-exp exp1 exp2) (* (interp exp1 env) (interp exp2 env))]
-    [(quotient-exp exp1 exp2) (quotient (interp exp1 env) (interp exp2 env))]
-    [(minus-exp exp) (* (interp exp env) -1)]
-    ;;Boolean Ops
-    [(zero?-exp exp) (= (interp exp env) 0)]
-    [(equal?-exp exp1 exp2) (= (interp exp1 env) (interp exp2 env))]
-    [(greater?-exp exp1 exp2) (> (interp exp1 env) (interp exp2 env))]
-    [(less?-exp exp1 exp2) (< (interp exp1 env)(interp exp2 env))]
-    ;; Branching
-    [(if-exp cond-exp if-exp else-exp)
-     (define cond-result (interp cond-exp env))
-     (if cond-result (interp if-exp env) (interp else-exp env))]
-    ;; proc language extension
-    ;; application/closure expression
-    [(app-exp app-name app-body)
-     (match-define ;get the closure from the environment
-       (closure clos-argument clos-body clos-environment)
-       (apply-env env (var-exp-var app-name)))
-     ; this is the application exp, we need the result to feed the closure
-     (define app-body-value (interp app-body env))
-     ;the closure env is the current env plus the clos inner env
-     (define new-closure-env
-       (join-env 
-        ;the close argument gets replaced by the application result
-        (extend-env env (var-exp-var clos-argument) app-body-value) 
-        clos-environment))
-     (interp clos-body new-closure-env)]
+    [(const-exp num) (apply-cont k num)]
+    [(var-exp var) (apply-cont k (apply-env env var))]
     ;; lambda expression
     ;; a lambda expression evaluates to a closure
     [(lambda-exp body argument)
-     (closure body argument env)]
+     (apply-cont k (closure body argument env))]
+    [(zero?-exp exp) (interp exp env (zero-cont k))]
+
+    ;; let with continuation
+    [(let-exp var-exp binding-exp body-exp)
+     (define variable-name (var-exp-var var-exp))
+     (define let-cont (let-exp-cont variable-name body-exp env k))
+     (interp binding-exp env let-cont)]    
     ;; recursive let
     [(letrec-exp proc var proc-body let-body)
      (define proc-name (var-exp-var proc))
@@ -365,18 +277,44 @@
      ;;to be able to see the binding in the closure body
      ;;we need to mutate the environment to include its own binding
      (set-closure-environment! new-closure let-environment)
-     (interp let-body let-environment)]
+     ;;the proc part doesnt get executed, thats why
+     ;;we dont need to execute that and continue with the body
+     (interp let-body let-environment k)]
+    ;; application expression
+    [(app-exp app-name app-body)
+     (define app-exp-cont (app-cont app-name env k))
+     (interp app-body env app-exp-cont)]
+    
+    ;; if with continuations
+    [(if-exp cond-exp if-exp else-exp)
+     (define if-exp-cont (if-cont if-exp else-exp env k))
+     (interp cond-exp env if-exp-cont)]
+    
+    ;;Arithmetic Operations
+    [(diff-exp exp1 exp2) (- (interp exp1 env) (interp exp2 env))]
+    [(add-exp exp1 exp2) (+ (interp exp1 env) (interp exp2 env))]
+    [(mul-exp exp1 exp2) (* (interp exp1 env) (interp exp2 env))]
+    [(quotient-exp exp1 exp2) (quotient (interp exp1 env) (interp exp2 env))]
+    [(minus-exp exp) (* (interp exp env) -1)]
+    ;;Boolean Ops
+    
+    [(equal?-exp exp1 exp2) (= (interp exp1 env) (interp exp2 env))]
+    [(greater?-exp exp1 exp2) (> (interp exp1 env) (interp exp2 env))]
+    [(less?-exp exp1 exp2) (< (interp exp1 env)(interp exp2 env))]
+    ;; proc language extension
+    ;; application/closure expression
+        
     ;;state management
     [(display-exp exp1)
      (displayln (interp  exp1 env))]
     [(begin-exp exp1 exp2)
      (interp exp1 env)
      (interp exp2 env)]
-    [(let-exp var-exp binding-exp body-exp)
-     (define variable-name (var-exp-var var-exp))
-     (define variable-value (interp binding-exp env)) 
-     (interp body-exp (extend-env env variable-name variable-value))]))
+    ))
 
+
+
+(run "letrec some(x) = zero?(x): in some(0)")
 
 
 (module+ test
@@ -404,6 +342,4 @@
                 (run "
                      letrec fact(x) = 
                              if zero?(x) 1 *(x,fact(-(x,1))): 
-                      in fact(5)"))
-  (check-equal? 10 (run "let z = newref(10): in begin setref!(z, 20); -(deref(z),10) end"))
-  (check-equal? 10 (run "let x = 10: in begin set!(x,20); -(x,10) end")))
+                      in fact(5)")))
